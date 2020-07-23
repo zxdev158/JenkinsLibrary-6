@@ -1,260 +1,198 @@
-import com.ohadc.common.models.BuildInfo;
-import com.ohadc.common.models.gerrit.GerritTriggerInfo;
-import groovy.json.*;
-import groovy.xml.*;
 
-GerritTriggerInfo getGerritTriggerInfo()
+
+/*
+ runs on all pipelines in selected folder and finds last build by cron and prints:
+ pipeline name, url, last build start time (by cron), duration, nodeA, nodeB,...,nodeZ
+ */
+
+/**
+ * Gets a folder by its full name
+ * @param folderName the full name of the folder
+ * @return the folder instance or null if not exists
+ */
+def getFolder(String folderName)
 {
-	GerritTriggerInfo triggerInfo = null;
-	def thisBuild = currentBuild.rawBuild; // should be org.jenkinsci.plugins.workflow.job.WorkflowRun
-	echo "this build: ${thisBuild.dump()}"
-
-	def thisRun = thisBuild.getParent(); // should be org.jenkinsci.plugins.workflow.job.WorkflowJob
-	echo "this run: ${thisRun.dump()}"
-
-	def props = thisRun.properties;
-	echo "props: ${props.dump()}"
-
-	for(prop in props)
+	for(def item in  Jenkins.instance.getAllItems())
 	{
-		// Checking class name since i dont wanna download the relevant jar
-		if(prop.value.getClass().getName() == "org.jenkinsci.plugins.workflow.job.properties.PipelineTriggersJobProperty")
+		if(item instanceof com.cloudbees.hudson.plugins.folder.Folder && item.getFullName() == folderName)
 		{
-			echo "this prop is related to trigger"
-			echo "prop value triggers: ${prop.value.triggers.dump()}"
-			for(trig in prop.value.triggers)
-			{
-				echo "trigger: ${trig.dump()}"
-				// if(trig instanceof com.sonyericsson.hudson.plugins.gerrit.trigger.hudsontrigger.GerritTrigger)
-				if(trig.getClass().getName() =="com.sonyericsson.hudson.plugins.gerrit.trigger.hudsontrigger.GerritTrigger")
-				{
-					triggerInfo = new GerritTriggerInfo(trig);
-					break;
-				}
-			}
-			if(triggerInfo != null)
-			{
-				break;
-			}
-		}
-
-	}
-	return triggerInfo
-}
-
-List<String> getCauseDescriptionList()
-{
-	List<String> causes = [];
-	def buildCauses = currentBuild.rawBuild.getCauses();
-
-	for(def cause in buildCauses)
-	{
-		causes << "${cause.getShortDescription()}"
-	}
-
-	return causes;
-}
-
-boolean isByUser()
-{
-	return currentBuild.rawBuild.getCause(hudson.model.Cause$UserIdCause) != null;
-}
-
-boolean isBySCM()
-{
-	return currentBuild.rawBuild.getCause(hudson.triggers.SCMTrigger$SCMTriggerCause) != null;
-}
-
-boolean isByUpstream()
-{
-	return currentBuild.rawBuild.getCause(hudson.model.Cause$UpstreamCause) != null;
-}
-
-boolean isByTimer()
-{
-	return currentBuild.rawBuild.getCause(hudson.triggers.TimerTrigger$TimerTriggerCause) != null;
-}
-
-boolean isByRemote()
-{
-	return currentBuild.rawBuild.getCause(hudson.model.Cause$RemoteCause) != null;
-}
-
-int stageIndex(String name)
-{
-	BuildInfo info = get();
-
-	if(info.stages != null)
-	{
-		return info.stages.findIndexOf({it.stageName == name});
-	}
-
-	return -1;
-}
-
-def isLastStage(String name)
-{
-	int index = stageIndex(name);
-
-	if(index > -1)
-	{
-		// this means that stageindex worked - so stages exists
-		BuildInfo info = get();
-		if(index == info.stages.size() - 1)
-		{
-			return true;
-		}
-		else
-		{
-			return false;
+			return item;
 		}
 	}
-
 	return null;
 }
 
-def getStages()
+void writeToArchive(String relativePath, String content)
 {
-	return get().stages;
-}
-
-String asJson(BuildInfo providedInfo = null)
-{
-	BuildInfo info = providedInfo != null ? providedInfo : getRawInfo();
-	String result = json.stringify(info);
-	return result;
-}
-
-String result()
-{
-	return currentBuild.result == null ? "SUCCESS" : currentBuild.result;
-}
-
-void setResult(String result = "FAILURE")
-{
-	currentBuild.result = result;
-}
-
-String description(String text = "")
-{
-	if(text != null && text != "")
+	File archivedFile = new File(manager.build.getArtifactManager().getArtifactsDir().getAbsolutePath(), relativePath);
+	if(!archivedFile.getParentFile().exists())
 	{
-		if(currentBuild.description == null || currentBuild.description == "")
-		{
-			currentBuild.description = text;
-		}
-		else
-		{
-			currentBuild.description += "\n${text}";
-		}
-
+		archivedFile.getParentFile().mkdirs();
 	}
-	//	echo "current description: ${currentBuild.description}"
-	return currentBuild.description;
+	archivedFile.write(content);
 }
 
-void clearDescription()
+/**
+ * Checks for a given build if it was started by timer
+ * @param build the build instance
+ * @return true if started by cron, false otherwise
+ */
+boolean isByTimer(def build)
 {
-	currentBuild.description = null;
+	return build.getCause(hudson.triggers.TimerTrigger$TimerTriggerCause) != null;
 }
 
-void unstable()
+/**
+ * gets the log for the given build and removes all unreadble characters from it
+ * source: https://issues.jenkins-ci.org/browse/JENKINS-52510
+ * @param build the build instance
+ * @return the fixed log
+ */
+def getFixedLog(def build)
 {
-	setResult("UNSTABLE");
+	def baos = new ByteArrayOutputStream();
+	build.getLogText().writeLogTo(0, baos);
+	return baos.toString();
 }
 
-void abort(){
-	setResult("ABORTED")
-}
-
-void fail()
+/**
+ * Converts a duration given in mili-seconds into short readable time
+ * output ex: 37sec    |    1.5h
+ * source: https://issues.jenkins-ci.org/browse/JENKINS-52510
+ * @param the duration in mili-seconds
+ * @return a short string representing the duration
+ */
+String getDurationStrFromMili(long durationMilisec)
 {
-	setResult()
+	int seconds = ((int) (durationMilisec / 1000)) % 60 ;
+	int minutes = ((int) ((durationMilisec / (1000*60))) % 60);
+	int hours   = ((int) ((durationMilisec / (1000*60*60))) % 24);
+	//println "mili: ${durationMilisec} ; sec: ${seconds}  ; min: ${minutes} ; h: ${hours}"
+
+	def formattedStr = String.format("%02d:%02d:%02d", hours, minutes, seconds)
+	//println formattedStr
+	return formattedStr
+
 }
 
-BuildInfo getRawInfo()
+
+
+def createFromLastTimerBuild(String folderName)
 {
-	BuildInfo info = BuildInfo.get([
-		cause: getCauseDescriptionList().join("\n"),
-		status: result(),
-		jobUrl: env.JOB_URL,
-		buildUrl: env.BUILD_URL,
-		testsUrl: "${env.JOB_URL}test_results_analyzer/",
-		htmlReportUrl: "${env.BUILD_URL}HTML_Report/",
-		consoleUrl: "${env.BUILD_URL}console/"
-	]);
-	info.sync();
-	return info;
-}
-
-BuildInfo get()
-{
-	return getRawInfo();
-}
-
-void addInfo(String name, def value)
-{
-	BuildInfo.get().add(name, value);
-}
-
-void addHardLink(String name, def value)
-{
-	BuildInfo.get().add(name+BuildInfo.k_HardLink, value);
-}
-
-String asXml(BuildInfo providedInfo = null)
-{
-	// Create the markup builder
-	StringWriter writer = new StringWriter();
-	MarkupBuilder xml = new MarkupBuilder(writer);
-	xml.setDoubleQuotes(true);
-
-	// set root element "buildInfo"
-	xml.buildInfo();
-
-	// Parse markup builder into a groov xml node
-	def root = new XmlParser().parseText(writer.toString())
-
-	try
+	List<String> csvLines = ["Project name, Url, Started at, Duration, Stations"]
+	def folder = getFolder(folderName);
+	for(def project in folder.items)
 	{
-		BuildInfo info = providedInfo != null ? providedInfo : getRawInfo();
+		boolean foundTimer = false;
 
-		for(def prop in info.getProperties())
+		if(!(project instanceof com.cloudbees.hudson.plugins.folder.Folder))
 		{
-			boolean valid = prop.value instanceof String || prop.value instanceof GString ||prop.value.getClass().isPrimitive();
+			def currentBuild = project.getLastBuild();
+			def currentBuildNumber = currentBuild == null ? 0 : currentBuild.number;
 
-			if(valid)
+			while(currentBuild != null && !foundTimer && currentBuildNumber > 0)
 			{
-				String lowerKey = prop.key.toLowerCase();
-				root.appendNode(new QName("property"), [name:prop.key.replace(BuildInfo.k_HardLink, ""), value:prop.value, type: lowerKey.contains("url") || prop.key.contains(BuildInfo.k_HardLink) ? "link" : "string"]);
+				if(isByTimer(currentBuild))
+				{
+					foundTimer = true;
+				}
+				else
+				{
+					currentBuildNumber--;
+					currentBuild = project.getBuildByNumber(currentBuildNumber);
+				}
+			}
+
+			if(currentBuild == null)
+			{
+				println "${project.name}, ${project.getAbsoluteUrl()}, has no timer builds"
+				continue;
+			}
+
+
+			def log = getFixedLog(currentBuild).readLines();
+			//def log = currentBuild.logFile.text.readLines();
+			def runningon = log.findAll({it.contains("Running on")})
+			def slaves = [];
+			for(def line in runningon)
+			{
+				def nameMatch = line =~ /(?i).*Running on (.*) in.*/;
+				if(nameMatch)
+				{ // need 1st group
+					if(!slaves.contains(nameMatch.group(1))){
+						slaves << nameMatch.group(1)
+					}
+				}
+			}
+			line = "${project.name}, ${currentBuild.getAbsoluteUrl()}, ${currentBuild.getTime().format('dd/MM/yyyy hh:mm:ss')}, ${getDurationStrFromMili(currentBuild.duration)}, ${slaves.join(';')}";
+			println(line)
+			csvLines << line
+		}
+	}
+
+	if(env != null)
+	{
+		// we are inside a pipeline and not in script console
+		writeToArchive("nodes.csv", csvLines.join("\n"));
+	}
+}
+
+def createFromBuildProperties(String folderName)
+{
+	List<String> csvLines = ["Project name, Url, Cron, Duration, Stations"]
+	def folder = getFolder(folderName);
+	for(def project in folder.items)
+	{
+		boolean foundTimer = false;
+
+		if(!(project instanceof com.cloudbees.hudson.plugins.folder.Folder))
+		{
+			def lastBuild = project.getLastBuild();
+
+			if(lastBuild == null)
+			{
+				echo "Project: ${project.name} has no builds"
+			}
+			else
+			{
+				def pipe = lastBuild.getParent();
+
+				def pipelineProperties = pipe.properties;
+
+
+				for(def prop in pipelineProperties)
+				{
+					if(prop.value.getClass().getName() == "org.jenkinsci.plugins.workflow.job.properties.PipelineTriggersJobProperty")
+					{
+						for(trig in prop.value.triggers)
+						{
+							echo "trigger: ${trig.dump()}"
+							if(trig.getClass().getName() == "hudson.triggers.TimerTrigger")
+							{
+								echo "${trig.spec}"
+								line = "${project.name}, ${currentBuild.getAbsoluteUrl()}, ${trig.spec}, ${getDurationStrFromMili(currentBuild.duration)}, ${slaves.join(';')}";
+								println(line)
+								csvLines << line
+							}
+						}
+					}
+				}
 			}
 		}
 	}
-	catch(e)
+	if(env != null)
 	{
-		echo "buildInfo.asXml Error: ${e.message}"
+		// we are inside a pipeline and not in script console
+		writeToArchive("nodes.csv", csvLines.join("\n"));
 	}
-
-	String xmlText = XmlUtil.serialize(root);
-	xmlText = xmlText.replace("?>", "?>\n").replace("xmlns=\"\" ", "");
-	return xmlText;
 }
 
-void writeTriggerInfo()
+String folderName = ""
+
+if(params != null)
 {
-	String gerritInfo = "";
-	String projectName = env.GERRIT_PROJECT != null ? env.GERRIT_PROJECT : "";
-	String projectBranch = env.GERRIT_BRANCH != null ? env.GERRIT_BRANCH : "";
-	String changeOwnerName = env.GERRIT_CHANGE_OWNER_NAME != null ? env.GERRIT_CHANGE_OWNER_NAME : "";
-	String changeOwnerEmail = env.GERRIT_CHANGE_OWNER_EMAIL != null ? env.GERRIT_CHANGE_OWNER_EMAIL : "";
-	String commitMessage = env.GERRIT_CHANGE_SUBJECT != null ? env.GERRIT_CHANGE_SUBJECT : "";
-	commitMessage = commitMessage.replace(",", ".");
-	String gerritUrl = env.GERRIT_CHANGE_URL != null ? env.GERRIT_CHANGE_URL : "";
-
-	if(projectName != "")
-	{
-		gerritInfo = "${projectName},${projectBranch},${changeOwnerName}(${changeOwnerEmail}),${commitMessage},${gerritUrl}"
-		artifacts.writeFile("trigger.txt", gerritInfo);
-	}
+	folderName = params.FOLDER_NAME;
 }
+
+createFromBuildProperties(folderName);
 
