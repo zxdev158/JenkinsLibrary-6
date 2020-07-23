@@ -139,7 +139,7 @@ def createFromLastTimerBuild(String folderName)
 
 def createFromBuildProperties(String folderName)
 {
-	List<String> csvLines = ["Project name, Url, Cron, Duration, Stations"]
+	List<String> csvLines = ["Project name, Url, Status, Cron, Duration, Stations"]
 	def folder = getFolder(folderName);
 	for(def project in folder.items)
 	{
@@ -156,10 +156,8 @@ def createFromBuildProperties(String folderName)
 			else
 			{
 				def pipe = lastBuild.getParent();
-                echo "${pipe.dump()}"
+				def status = pipe.isDisabled() ? "Disabled" : "Enabled";
 				def pipelineProperties = pipe.properties;
-
-
 				for(def prop in pipelineProperties)
 				{
 					if(prop.value.getClass().getName() == "org.jenkinsci.plugins.workflow.job.properties.PipelineTriggersJobProperty")
@@ -189,8 +187,8 @@ def createFromBuildProperties(String folderName)
 						}
 					}
 				}
-				println("${project.name}, ${currentBuild.getAbsoluteUrl()}, ${cronTab}, ${getDurationStrFromMili(currentBuild.duration)}, ${slaves.join(';')}");
-				csvLines << "${project.name}, ${currentBuild.getAbsoluteUrl()}, ${cronTab.replace(',', '.')}, ${getDurationStrFromMili(currentBuild.duration)}, ${slaves.join(';')}";
+				println("${project.name}, ${lastBuild.getAbsoluteUrl()}, ${status}, ${cronTab}, ${getDurationStrFromMili(lastBuild.duration)}, ${slaves.join(';')}");
+				csvLines << "${project.name}, ${lastBuild.getAbsoluteUrl()}, ${status}, ${cronTab.replace(',', '.')}, ${getDurationStrFromMili(lastBuild.duration)}, ${slaves.join(';')}";
 			}
 		}
 	}
