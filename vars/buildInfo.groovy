@@ -142,7 +142,7 @@ def createFromBuildProperties(String folderName)
 	def folder = getFolder(folderName);
 	for(def project in folder.items)
 	{
-	    cronTab = null;
+	    def cronTab = null;
 
 		if(!(project instanceof com.cloudbees.hudson.plugins.folder.Folder))
 		{
@@ -165,7 +165,6 @@ def createFromBuildProperties(String folderName)
 		            {
             			for(trig in prop.value.triggers)
             			{
-            				// echo "trigger: ${trig.dump()}"
             				if(trig.getClass().getName() == "hudson.triggers.TimerTrigger")
             				{
 								cronTab = trig.spec
@@ -195,10 +194,10 @@ def createFromBuildProperties(String folderName)
 		}
 	}
 	if(env != null)
-    {
-    	// we are inside a pipeline and not in script console 
-    	writeToArchive("nodes.csv", csvLines.join("\n"));
-    }
+	{
+	// we are inside a pipeline and not in script console 
+	writeToArchive("nodes.csv", csvLines.join("\n"));
+	}
 }
 
 String folderName = ""
