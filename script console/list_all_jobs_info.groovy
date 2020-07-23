@@ -4,7 +4,6 @@
  runs on all pipelines in selected folder and finds last build by cron and prints:
  pipeline name, url, last build start time (by cron), duration, nodeA, nodeB,...,nodeZ
  */
-List<String> csvLines = ["Project name, Url, Started at, Duration, Stations"]
 
 /**
  * Gets a folder by its full name
@@ -63,77 +62,151 @@ def getFixedLog(def build)
  * @param the duration in mili-seconds
  * @return a short string representing the duration
  */
-String getDurationStrFromMili(long durationMilisec){
-  int seconds = ((int) (durationMilisec / 1000)) % 60 ;
-  int minutes = ((int) ((durationMilisec / (1000*60))) % 60);
-  int hours   = ((int) ((durationMilisec / (1000*60*60))) % 24);
-  //println "mili: ${durationMilisec} ; sec: ${seconds}  ; min: ${minutes} ; h: ${hours}"
-  
-  def formattedStr = String.format("%02d:%02d:%02d", hours, minutes, seconds)
-  //println formattedStr
-  return formattedStr
-  
+String getDurationStrFromMili(long durationMilisec)
+{
+	int seconds = ((int) (durationMilisec / 1000)) % 60 ;
+	int minutes = ((int) ((durationMilisec / (1000*60))) % 60);
+	int hours   = ((int) ((durationMilisec / (1000*60*60))) % 24);
+	//println "mili: ${durationMilisec} ; sec: ${seconds}  ; min: ${minutes} ; h: ${hours}"
+
+	def formattedStr = String.format("%02d:%02d:%02d", hours, minutes, seconds)
+	//println formattedStr
+	return formattedStr
+
+}
+
+
+
+def createFromLastTimerBuild(String folderName)
+{
+	List<String> csvLines = ["Project name, Url, Started at, Duration, Stations"]
+	def folder = getFolder(folderName);
+	for(def project in folder.items)
+	{
+		boolean foundTimer = false;
+
+		if(!(project instanceof com.cloudbees.hudson.plugins.folder.Folder))
+		{
+			def currentBuild = project.getLastBuild();
+			def currentBuildNumber = currentBuild == null ? 0 : currentBuild.number;
+
+			while(currentBuild != null && !foundTimer && currentBuildNumber > 0)
+			{
+				if(isByTimer(currentBuild))
+				{
+					foundTimer = true;
+				}
+				else
+				{
+					currentBuildNumber--;
+					currentBuild = project.getBuildByNumber(currentBuildNumber);
+				}
+			}
+
+			if(currentBuild == null)
+			{
+				println "${project.name}, ${project.getAbsoluteUrl()}, has no timer builds"
+				continue;
+			}
+
+
+			def log = getFixedLog(currentBuild).readLines();
+			//def log = currentBuild.logFile.text.readLines();
+			def runningon = log.findAll({it.contains("Running on")})
+			def slaves = [];
+			for(def line in runningon)
+			{
+				def nameMatch = line =~ /(?i).*Running on (.*) in.*/;
+				if(nameMatch)
+				{ // need 1st group
+					if(!slaves.contains(nameMatch.group(1))){
+						slaves << nameMatch.group(1)
+					}
+				}
+			}
+			line = "${project.name}, ${currentBuild.getAbsoluteUrl()}, ${currentBuild.getTime().format('dd/MM/yyyy hh:mm:ss')}, ${getDurationStrFromMili(currentBuild.duration)}, ${slaves.join(';')}";
+			println(line)
+			csvLines << line
+		}
+	}
+
+	if(env != null)
+	{
+		// we are inside a pipeline and not in script console
+		writeToArchive("nodes.csv", csvLines.join("\n"));
+	}
+}
+
+def createFromBuildProperties(String folderName)
+{
+	List<String> csvLines = ["Project name, Url, Cron, Duration, Stations"]
+	def folder = getFolder(folderName);
+	for(def project in folder.items)
+	{
+		def cronTab = "Not scheduled";
+
+		if(!(project instanceof com.cloudbees.hudson.plugins.folder.Folder))
+		{
+			def lastBuild = project.getLastBuild();
+
+			if(lastBuild == null)
+			{
+				echo "Project: ${project.name} has no builds"
+			}
+			else
+			{
+				def pipe = lastBuild.getParent();
+                echo "${pipe.dump()}"
+				def pipelineProperties = pipe.properties;
+
+
+				for(def prop in pipelineProperties)
+				{
+					if(prop.value.getClass().getName() == "org.jenkinsci.plugins.workflow.job.properties.PipelineTriggersJobProperty")
+					{
+						for(trig in prop.value.triggers)
+						{
+							if(trig.getClass().getName() == "hudson.triggers.TimerTrigger")
+							{
+								cronTab = trig.spec
+							}
+						}
+
+					}
+				}
+
+
+				def log = getFixedLog(lastBuild).readLines();
+				def runningon = log.findAll({it.contains("Running on")})
+				def slaves = [];
+				for(def line in runningon)
+				{
+					def nameMatch = line =~ /(?i).*Running on (.*) in.*/;
+					if(nameMatch)
+					{ // need 1st group
+						if(!slaves.contains(nameMatch.group(1))){
+							slaves << nameMatch.group(1)
+						}
+					}
+				}
+				println("${project.name}, ${currentBuild.getAbsoluteUrl()}, ${cronTab}, ${getDurationStrFromMili(currentBuild.duration)}, ${slaves.join(';')}");
+				csvLines << "${project.name}, ${currentBuild.getAbsoluteUrl()}, ${cronTab.replace(',', '.')}, ${getDurationStrFromMili(currentBuild.duration)}, ${slaves.join(';')}";
+			}
+		}
+	}
+	if(env != null)
+	{
+		// we are inside a pipeline and not in script console
+		writeToArchive("nodes.csv", csvLines.join("\n"));
+	}
 }
 
 String folderName = ""
 
 if(params != null)
 {
-    folderName = params.FOLDER_NAME;
+	folderName = params.FOLDER_NAME;
 }
 
-def folder = getFolder(folderName);
-for(def project in folder.items)
-{
-	boolean foundTimer = false;
+createFromBuildProperties(folderName);
 
-	if(!(project instanceof com.cloudbees.hudson.plugins.folder.Folder))
-	{
-		def currentBuild = project.getLastBuild();
-		def currentBuildNumber = currentBuild == null ? 0 : currentBuild.number;
-
-		while(currentBuild != null && !foundTimer && currentBuildNumber > 0)
-		{
-			if(isByTimer(currentBuild))
-			{
-				foundTimer = true;
-			}
-			else
-			{
-				currentBuildNumber--;
-				currentBuild = project.getBuildByNumber(currentBuildNumber);
-			}
-		}
-
-		if(currentBuild == null)
-		{
-			println "${project.name}, ${project.getAbsoluteUrl()}, has no timer builds"
-			continue;
-		}
-
-		
-		def log = getFixedLog(currentBuild).readLines();
-		//def log = currentBuild.logFile.text.readLines();
-		def runningon = log.findAll({it.contains("Running on")})
-		def slaves = [];
-		for(def line in runningon)
-		{
-			def nameMatch = line =~ /(?i).*Running on (.*) in.*/;
-			if(nameMatch)
-			{ // need 1st group
-				if(!slaves.contains(nameMatch.group(1))){
-					slaves << nameMatch.group(1)
-				}
-			}
-		}
-		line = "${project.name}, ${currentBuild.getAbsoluteUrl()}, ${currentBuild.getTime().format('dd/MM/yyyy hh:mm:ss')}, ${getDurationStrFromMili(currentBuild.duration)}, ${slaves.join(';')}";
-		println(line)
-		csvLines << line
-	}
-}
-
-if(env != null)
-{
-	// we are inside a pipeline and not in script console 
-	writeToArchive("nodes.csv", csvLines.join("\n"));
-}
