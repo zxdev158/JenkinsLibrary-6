@@ -6,10 +6,10 @@ import groovy.xml.*;
 GerritTriggerInfo getGerritTriggerInfo()
 {
 	GerritTriggerInfo triggerInfo = null;
-	def thisBuild = currentBuild.rawBuild;
+	def thisBuild = currentBuild.rawBuild; // should be org.jenkinsci.plugins.workflow.job.WorkflowRun
 	echo "this build: ${thisBuild.dump()}"
 
-	def thisRun = thisBuild.getParent();
+	def thisRun = thisBuild.getParent(); // should be org.jenkinsci.plugins.workflow.job.WorkflowJob
 	echo "this run: ${thisRun.dump()}"
 
 	def props = thisRun.properties;
